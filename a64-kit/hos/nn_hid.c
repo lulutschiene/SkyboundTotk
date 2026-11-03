@@ -10,6 +10,10 @@
    x1.25, shown in the title bar, kept in <user>/mouse_sens.txt); HOS_MOUSE_SENS=<x> sets it, HOS_MOUSE_INVERT_Y=1
    flips up/down.
 
+   Input mode (F8 cycles it, shown in the title bar, kept in <user>/input_mode.txt; HOS_INPUT_MODE=<mode> sets it):
+   "both" (the default), "controller" (pads only, and they keep working while another window is in front, so the
+   keyboard and mouse stay free for other programs) or "keyboard" (keyboard and mouse only, pads ignored).
+
    HOS_INPUT_SCRIPT (test runs): timed presses added to the input, "<seconds>:<button>[+<button>...][/<ms held>],..."
    with buttons A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN and the stick directions LUP LDOWN LLEFT
    LRIGHT RUP RDOWN RLEFT RRIGHT; held 200 ms unless given. Example: "50:A,52:A,80:LUP/4000".
@@ -48,6 +52,44 @@ static void mouse_sens_save(void) {
     snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
     FILE *f = fopen(path, "w");
     if (f) { fprintf(f, "%.3f\n", hos_mouse_sens); fclose(f); }
+}
+
+/* The input mode (header): which devices count, chosen with F8 */
+enum { MODE_BOTH, MODE_CONTROLLER, MODE_KEYBOARD };
+static const char *const mode_names[] = {"both", "controller", "keyboard"};
+static int input_mode = -1;
+
+static void input_mode_load(void) {
+    char path[512], word[32] = "";
+    input_mode = MODE_BOTH;
+    snprintf(path, sizeof path, "%s/input_mode.txt", hos_user_dir ? hos_user_dir : "user");
+    FILE *f = fopen(path, "r");
+    if (f) { if (fscanf(f, "%31s", word) != 1) word[0] = 0; fclose(f); }
+    const char *e = getenv("HOS_INPUT_MODE");
+    if (e && *e) snprintf(word, sizeof word, "%s", e);
+    for (int i = 0; i < 3; i++)
+        if (!_stricmp(word, mode_names[i])) input_mode = i;
+    hos_log("hid: input mode %s", mode_names[input_mode]);
+}
+
+static void input_mode_keys(void) {
+    static int prev;
+    const int down = key(VK_F8);
+    if (down && !prev) {
+        input_mode = (input_mode + 1) % 3;
+        char path[512];
+        snprintf(path, sizeof path, "%s/input_mode.txt", hos_user_dir ? hos_user_dir : "user");
+        FILE *f = fopen(path, "w");
+        if (f) { fprintf(f, "%s\n", mode_names[input_mode]); fclose(f); }
+        hos_log("hid: input mode %s", mode_names[input_mode]);
+    }
+    prev = down;
+}
+
+/* (display.c shows it in the title) */
+const char *hos_input_mode_name(void) {
+    if (input_mode < 0) input_mode_load();
+    return mode_names[input_mode];
 }
 
 static void mouse_sens_keys(void) {
@@ -387,9 +429,19 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
-       used to follow the player's pad (and pressed things in its own menus). */
-    if ((npresses > 0 && (hos_now_ns() - script_t0) / 1000000 < script_end_ms + 5000) || !game_in_front()) return;
-    pads_read(buttons, stick);
+       used to follow the player's pad (and pressed things in its own menus). The "controller" input mode is the
+       exception: there the pads are meant to work from the background. */
+    if (npresses > 0 && (hos_now_ns() - script_t0) / 1000000 < script_end_ms + 5000) return;
+    if (input_mode < 0) input_mode_load();
+    const int front = game_in_front();
+    if (front) input_mode_keys();
+    if (input_mode != MODE_KEYBOARD && (front || input_mode == MODE_CONTROLLER)) pads_read(buttons, stick);
+    if (!front) return;
+    if (input_mode == MODE_CONTROLLER) {   /* (the mouse's motion is dropped, so a later switch does not jump) */
+        int32_t dx, dy;
+        hos_mouse_take(&dx, &dy);
+        return;
+    }
     /* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for
        Plus and IJKL as another camera) */
     struct { int vk; int b; } kmap[] = {

@@ -2,6 +2,12 @@
 /game/
 /build/
 /dist/
+# (per-version and set-aside copies: build_game.py --version, launcher/update.py; and save backups)
+/game-*/
+/build-*/
+/build.*/
+/save-backup*/
+launcher/launcher.ini
 *.nsp
 *.xci
 *.nca

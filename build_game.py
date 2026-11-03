@@ -1,24 +1,42 @@
-"""Build SkyboundTOTK from an already-extracted TOTK 1.0.0 dump."""
+"""Build SkyboundTOTK from an already-extracted TOTK 1.0.0 (or 1.2.1) dump.
+Usage: python build_game.py [--version 1.0.0|1.2.1]. Each version has its own game, build and package folders, so
+both can be installed side by side for the launcher (launcher/)."""
+import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import logging
 
 ROOT = Path(__file__).resolve().parent
-GAME = ROOT / "game"
-BUILD = ROOT / "build"
 KIT = ROOT / "a64-kit"
 WGPU = ROOT / "third_party" / "wgpu-native"
-DIST = ROOT / "dist" / "SkyboundTOTK"
-# The original base-game module IDs used by this port; this is not a full content-integrity check.
-EXPECTED_IDS = {
-    "main": "082ce09b06e33a123cb1e2770f5f9147709033db",
-    "sdk": "b9046c31eb5d31271be970fe732d38df49c6aa21",
+ICON = ROOT / "branding" / "skybound.ico"
+PACKAGE = ROOT / "dist" / "Skybound"
+# The original module IDs per game version (a prefix is enough); this is not a full content-integrity check.
+VERSIONS = {
+    "1.0.0": {"main": "082ce09b06e33a123cb1e2770f5f9147709033db", "sdk": "b9046c31eb5d31271be970fe732d38df49c6aa21"},
+    "1.2.1": {"main": "9b4e4365", "sdk": "b9046c31eb5d31271be970fe732d38df49c6aa21"},
 }
+VERSION = "1.0.0"
+GAME = ROOT / "game"
+BUILD = ROOT / "build"
+DIST = PACKAGE / "versions" / VERSION
+EXPECTED_IDS = VERSIONS[VERSION]
+
+
+def select_version(version):
+    """1.0.0 keeps the original game/ and build/ folders; another version uses game-<v>/ and build-<v>/."""
+    global VERSION, GAME, BUILD, DIST, EXPECTED_IDS
+    VERSION = version
+    suffix = "" if version == "1.0.0" else "-" + version
+    GAME, BUILD = ROOT / ("game" + suffix), ROOT / ("build" + suffix)
+    DIST = PACKAGE / "versions" / version
+    EXPECTED_IDS = VERSIONS[version]
 
 
 def setup_logging():
@@ -51,8 +69,8 @@ def check_game():
             fail(f"Missing {path}. Put your extracted TOTK 1.0.0 ExeFS and RomFS in game/. See README.md.")
         with path.open("rb") as f:
             header = f.read(0x60)
-        if len(header) < 0x60 or header[:4] != b"NSO0" or header[0x40:0x60].rstrip(b"\0").hex() != expected:
-            fail(f"{path} is not the expected TOTK 1.0.0 module. Updates and other versions are unsupported.")
+        if len(header) < 0x60 or header[:4] != b"NSO0" or not header[0x40:0x60].rstrip(b"\0").hex().startswith(expected):
+            fail(f"{path} is not the expected TOTK {VERSION} module. Only {', '.join(VERSIONS)} are supported.")
     if not (romfs / "Event").is_dir() or not (romfs / "ActorSystem").is_dir():
         fail(f"{romfs} does not look like an extracted TOTK RomFS. See README.md.")
     return exefs, romfs
@@ -148,13 +166,50 @@ def package(romfs):
         if not src.is_file():
             fail(f"Required build output is missing: {src}")
         shutil.copy2(src, DIST / name)
+    if os.name == "nt" and ICON.is_file():
+        add_icon(DIST / "SkyboundTOTK.exe", ICON)
+    launcher = ROOT / "launcher" / "Skybound.exe"
+    if launcher.is_file():
+        try:
+            shutil.copy2(launcher, PACKAGE / launcher.name)
+        except PermissionError:
+            log_and_print("The launcher is open, so its copy in the package was left as it is.")
     log_and_print(f"Copying RomFS to {DIST / 'romfs'}; this may take several minutes.")
     shutil.copytree(romfs, DIST / "romfs", symlinks=False)
     launch = DIST / ("SkyboundTOTK.exe" if os.name == "nt" else "SkyboundTOTK")
     log_and_print(f"\nBuild complete. Open {launch} to play.")
 
 
+def add_icon(exe, ico):
+    """Stores an .ico file's images in the executable as icon group 1 (Explorer, and the window: display.c)."""
+    import ctypes
+    from ctypes import wintypes
+    data = ico.read_bytes()
+    count = struct.unpack_from("<HHH", data)[2]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.BeginUpdateResourceW.restype = wintypes.HANDLE
+    k32.BeginUpdateResourceW.argtypes = (wintypes.LPCWSTR, wintypes.BOOL)
+    k32.UpdateResourceW.argtypes = (wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, wintypes.WORD, ctypes.c_char_p,
+                                    wintypes.DWORD)
+    k32.EndUpdateResourceW.argtypes = (wintypes.HANDLE, wintypes.BOOL)
+    handle = k32.BeginUpdateResourceW(str(exe), False)
+    if not handle:
+        fail(f"Could not open {exe} to add its icon (error {ctypes.get_last_error()}).")
+    group = struct.pack("<HHH", 0, 1, count)
+    for i in range(count):
+        w, h, colours, _, planes, bpp, size, offset = struct.unpack_from("<BBBBHHII", data, 6 + 16 * i)
+        k32.UpdateResourceW(handle, 3, i + 1, 0, data[offset:offset + size], size)   # RT_ICON
+        group += struct.pack("<BBBBHHIH", w, h, colours, 0, planes, bpp, size, i + 1)
+    k32.UpdateResourceW(handle, 14, 1, 0, group, len(group))   # RT_GROUP_ICON
+    if not k32.EndUpdateResourceW(handle, False):
+        fail(f"Could not add the icon to {exe} (error {ctypes.get_last_error()}).")
+    log_and_print(f"Added the icon to {exe.name}.")
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--version", choices=sorted(VERSIONS), default="1.0.0", help="game version to build")
+    select_version(parser.parse_args().version)
     setup_logging()
     exefs, romfs = check_game()
     check_tools()
@@ -168,7 +223,7 @@ def main():
     if complete and stamp.is_file() and stamp.read_text(encoding="ascii").strip() == identity:
         with image.open(encoding="utf-8") as f:
             modules = {m["name"]: m["build_id"] for m in json.load(f)["modules"]}
-        if any(modules.get(name) != build_id for name, build_id in EXPECTED_IDS.items()):
+        if any(not (modules.get(name) or "").startswith(build_id) for name, build_id in EXPECTED_IDS.items()):
             fail("Existing build contains a different game version. Move the build folder aside before retrying.")
         log_and_print("Reusing the existing lifted base-game code.")
     else:

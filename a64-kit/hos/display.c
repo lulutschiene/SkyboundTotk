@@ -164,6 +164,12 @@ static void update_title(void) {
         strncat(title, m, sizeof title - strlen(title) - 1);
     }
     else if (renderer) strncat(title, "  |  click for mouse camera", sizeof title - strlen(title) - 1);
+    {
+        const char *hos_input_mode_name(void);   /* nn_hid.c */
+        char m[64];
+        snprintf(m, sizeof m, "  |  input: %s (F8 switches)", hos_input_mode_name());
+        strncat(title, m, sizeof title - strlen(title) - 1);
+    }
     if (renderer && t < present_notice_until) {
         strncat(title, "  |  ", sizeof title - strlen(title) - 1);
         strncat(title, rx_present_hotkey(0), sizeof title - strlen(title) - 1);
@@ -290,6 +296,7 @@ static DWORD WINAPI display_main(void *p) {
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandleA(NULL);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = LoadIconA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(1));   /* (build_game.py adds it; NULL without) */
     wc.lpszClassName = "RexcompTotk";
     RegisterClassA(&wc);
     dpi_aware_thread();
