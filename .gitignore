@@ -16,6 +16,49 @@ launcher/launcher.ini
 *.keys
 *.sav
 
+# Switch dumps, keys, tickets and firmware, in any folder
+*.ncz
+*.tik
+*.cert
+*.cnmt
+*.nso
+*.nro
+*.npdm
+*.bin.keys
+firmware/
+nand/
+sdmc/
+bis/
+
+# Extracted game files and the game's own formats, in any folder (a dump copied somewhere by mistake)
+romfs/
+exefs/
+rtld
+subsdk[0-9]
+*.bfres
+*.bntx
+*.bfsha
+*.sarc
+*.pack
+*.zs
+*.byml
+*.bgyml
+*.bars
+*.bwav
+*.bfwav
+*.bfstm
+*.msbt
+*.rsizetable
+
+# Game-derived build outputs and a package's own data, in any folder
+image.bin
+image.json
+rxcache/
+user/
+mods/
+save-backups/
+previous/
+
 # Generated build tools and compiler output.
 __pycache__/
 *.pyc
