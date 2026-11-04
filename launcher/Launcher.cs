@@ -40,6 +40,57 @@ class DarkColours : ProfessionalColorTable
     public override Color CheckPressedBackground { get { return Theme.Sky; } }
 }
 
+// The game's output (it prints to its console and has no log file of its own): user\last-run.log, and the run before
+// it in previous-run.log. Stops growing at 50 MB; a log that cannot be written never stops the game.
+class RunLog
+{
+    const long MaxBytes = 50L * 1024 * 1024;
+    readonly object gate = new object();
+    StreamWriter writer;
+    long written;
+
+    public static string PathFor(GameVersion v) { return Path.Combine(v.User, "last-run.log"); }
+
+    public RunLog(GameVersion v)
+    {
+        try
+        {
+            string last = PathFor(v);
+            if (File.Exists(last)) File.Copy(last, Path.Combine(v.User, "previous-run.log"), true);
+            writer = new StreamWriter(last, false) { AutoFlush = true };
+        }
+        catch (Exception) { writer = null; }
+    }
+
+    public void Attach(Process p)
+    {
+        p.OutputDataReceived += (s, e) => Add(e.Data);
+        p.ErrorDataReceived += (s, e) => Add(e.Data);
+        p.BeginOutputReadLine();
+        p.BeginErrorReadLine();
+    }
+
+    void Add(string line)
+    {
+        if (line == null) return;
+        lock (gate)
+        {
+            if (writer == null || written > MaxBytes) return;
+            try { writer.WriteLine(line); written += line.Length + 2; }
+            catch (Exception) { writer = null; }
+        }
+    }
+
+    public void Close()
+    {
+        lock (gate)
+        {
+            if (writer != null) writer.Dispose();
+            writer = null;
+        }
+    }
+}
+
 // The launcher's own settings, key=value lines in launcher.ini beside it
 class Settings
 {
@@ -261,6 +312,7 @@ class LauncherForm : Form
         context.Items.Add(new ToolStripSeparator());
         context.Items.Add(Item("Open save folder", delegate { var v = Selected(); if (v != null) { Directory.CreateDirectory(v.Saves); Explore(v.Saves); } }));
         context.Items.Add(Item("Open game folder", delegate { var v = Selected(); if (v != null) Explore(v.Dir); }));
+        context.Items.Add(Item("Open last game log", delegate { var v = Selected(); if (v != null) OpenLog(v); }));
         context.Items.Add(Item("Mods...", delegate { var v = Selected(); if (v != null) Mods.Show(this, v); }));
         context.Items.Add(Item("Save backups...", delegate { var v = Selected(); if (v != null) Backups.Show(this, v, Reload); }));
         context.Items.Add(new ToolStripSeparator());
@@ -393,6 +445,12 @@ class LauncherForm : Form
 
     bool GameRunning() { return running != null && !running.HasExited; }
 
+    void OpenLog(GameVersion v)
+    {
+        if (File.Exists(RunLog.PathFor(v))) Process.Start("notepad.exe", "\"" + RunLog.PathFor(v) + "\"");
+        else MessageBox.Show(this, "No log yet: this version has not been started from the launcher.", "Skybound");
+    }
+
     void ShowSettings()
     {
         GameSettings.Show(this, settings, versions, ModeLabels, Math.Max(0, Array.IndexOf(Modes, settings.Get("input_mode", "both"))),
@@ -418,11 +476,14 @@ class LauncherForm : Form
         settings.Set("last_version", v.Name);
         settings.Set("last." + v.Name, DateTime.Now.Ticks.ToString());
         var start = DateTime.Now;
+        var log = new RunLog(v);
         try
         {
-            var info = new ProcessStartInfo(v.Exe) { WorkingDirectory = v.Dir, UseShellExecute = false };
+            var info = new ProcessStartInfo(v.Exe) { WorkingDirectory = v.Dir, UseShellExecute = false, CreateNoWindow = true,
+                                                     RedirectStandardOutput = true, RedirectStandardError = true };
             GameSettings.Apply(settings, info);
             running = Process.Start(info);
+            log.Attach(running);
             if (settings.Get("hide_while_playing", "1") == "1") WindowState = FormWindowState.Minimized;
         }
         catch (Exception e)
@@ -433,6 +494,8 @@ class LauncherForm : Form
         }
         running.EnableRaisingEvents = true;
         running.Exited += delegate {
+            System.Threading.Thread.Sleep(300);   // (the last lines still in the pipes)
+            log.Close();
             BeginInvoke((Action)delegate {
                 var inv = System.Globalization.CultureInfo.InvariantCulture;
                 double before = double.Parse(settings.Get("played." + v.Name, "0"), inv);
@@ -441,11 +504,15 @@ class LauncherForm : Form
                     ? File.ReadAllText(Path.Combine(v.User, "input_mode.txt")).Trim() : "";
                 if (Array.IndexOf(Modes, m) >= 0) SetMode(Array.IndexOf(Modes, m));
                 if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
-                // (a crash: the game's log is the place to look)
-                if (running.ExitCode != 0 && (DateTime.Now - start).TotalSeconds > 2 &&
+                // (0xC0E90002: Windows refused to run it; otherwise a crash, and the game's output says why)
+                if (running.ExitCode == unchecked((int)0xC0E90002))
+                    MessageBox.Show(this, "Windows blocked the game: Smart App Control does not run programs that are " +
+                                    "not signed. It runs once Smart App Control is off (Windows Security, App & browser " +
+                                    "control).", "Skybound", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                else if (running.ExitCode != 0 &&
                     MessageBox.Show(this, "The game stopped unexpectedly (exit code " + running.ExitCode + "). Open its " +
-                                    "folder to find the log?", "Skybound", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                    Explore(v.Dir);
+                                    "log?", "Skybound", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                    OpenLog(v);
                 Reload();
             });
         };

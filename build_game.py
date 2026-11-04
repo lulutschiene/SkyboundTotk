@@ -166,8 +166,10 @@ def package(romfs):
         if not src.is_file():
             fail(f"Required build output is missing: {src}")
         shutil.copy2(src, DIST / name)
-    if os.name == "nt" and ICON.is_file():
-        add_icon(DIST / "SkyboundTOTK.exe", ICON)
+    if os.name == "nt":
+        if ICON.is_file():
+            add_icon(DIST / "SkyboundTOTK.exe", ICON)
+        hide_console(DIST / "SkyboundTOTK.exe")
     launcher = ROOT / "launcher" / "Skybound.exe"
     if launcher.is_file():
         try:
@@ -178,6 +180,18 @@ def package(romfs):
     shutil.copytree(romfs, DIST / "romfs", symlinks=False)
     launch = DIST / ("SkyboundTOTK.exe" if os.name == "nt" else "SkyboundTOTK")
     log_and_print(f"\nBuild complete. Open {launch} to play.")
+
+
+def hide_console(exe):
+    """Marks the packaged executable as a windowed program, so no terminal opens with it (build/ keeps the console
+    one for debugging). Its output still reaches a pipe: the launcher keeps it in user/last-run.log."""
+    with exe.open("r+b") as f:
+        header = f.read(4096)
+        pe = struct.unpack_from("<I", header, 0x3C)[0]
+        if header[pe:pe + 4] != b"PE\0\0":
+            fail(f"{exe} is not a Windows executable.")
+        f.seek(pe + 24 + 68)   # IMAGE_OPTIONAL_HEADER.Subsystem
+        f.write(struct.pack("<H", 2))   # IMAGE_SUBSYSTEM_WINDOWS_GUI
 
 
 def add_icon(exe, ico):
