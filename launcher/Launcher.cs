@@ -166,9 +166,11 @@ class LauncherForm : Form
         try { StartMenuShortcut(); } catch (Exception) { }
     }
 
-    // Start menu\Programs\Skybound.lnk, so Windows search finds the launcher; rewritten when the folder has moved
+    // Start menu\Programs\Skybound.lnk, so Windows search finds the launcher; rewritten only when it is missing or its
+    // target is gone (the folder moved), so another copy of the launcher cannot take it over
     static void StartMenuShortcut()
     {
+        if (!Directory.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "versions"))) return;
         string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Skybound.lnk");
         string exe = Application.ExecutablePath;
         Type type = Type.GetTypeFromProgID("WScript.Shell");
@@ -177,7 +179,7 @@ class LauncherForm : Form
                                         new object[] { lnk });
         Type lt = link.GetType();
         string now = (string)lt.InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, link, null);
-        if (File.Exists(lnk) && string.Equals(now, exe, StringComparison.OrdinalIgnoreCase)) return;
+        if (File.Exists(lnk) && File.Exists(now)) return;
         lt.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, link, new object[] { exe });
         lt.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, link,
                         new object[] { Path.GetDirectoryName(exe) });
